@@ -17,8 +17,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.7",
-        description  => "Downloads galleries from nHentai with 403/Cloudflare mitigation and ZIP packaging.",
+        version      => "2.8",
+        description  => "Downloads galleries from nHentai with Full Japanese Title support and ZIP packaging.",
         url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
@@ -29,7 +29,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.7 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.8 Triggered: $url ---");
 
     # 模擬真實瀏覽器行為
     my $ua = $lrr_info->{user_agent};
@@ -43,22 +43,28 @@ sub provide_url {
     if ($res->is_success) {
         my $html = $res->body;
         
-        # 提取日文標題 (優先) 或英文標題
-        my $title = "";
-        if ($html =~ m#<h2 class="title">.*?<span class="pretty">(.*?)</span>#is) {
-            $title = $1;
-        } elsif ($html =~ m#<h1 class="title">.*?<span class="pretty">(.*?)</span>#is) {
-            $title = $1;
+        # 提取完整標題 (包含 before, pretty, after)
+        my $raw_title = "";
+        if ($html =~ m#<h2 class="title">(.*?)</h2>#is) {
+            $raw_title = $1;
+        } elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) {
+            $raw_title = $1;
         }
         
-        if ($title) {
-            $title =~ s#<[^>]*>##g; 
-            $title =~ s#[/\\:*?"<>|]#_#g; 
-            $title =~ s#^\s+|\s+$##g;
-            if (length($title) > 150) { $title = substr($title, 0, 150); }
-        } else {
-            $title = "nhentai_download";
+        my $title = "nhentai_download";
+        if ($raw_title) {
+            $title = $raw_title;
+            $title =~ s#<[^>]*>##g; # 移除所有 HTML 標籤 (如 span)
+            $title =~ s#[\r\n\t]# #g; # 將換行/製表符轉為空格
+            $title =~ s#\s+# #g; # 縮減連續空格
+            $title =~ s#[\/\\:\*\?"<>\|]#_#g; # 移除非法字元
+            $title =~ s#^\s+|\s+$##g; # 修剪首尾空白
+            
+            # 限制長度，避免檔案系統報錯
+            if (length($title) > 200) { $title = substr($title, 0, 200); }
         }
+        
+        $logger->info("Full Extracted Title: $title");
 
         # 提取 Media ID
         if ($html =~ m#/galleries/(\d+)/#i) {
@@ -71,31 +77,30 @@ sub provide_url {
             }
 
             if ($media_id && $num_pages > 0) {
-                $logger->info("Found Media ID: $media_id, Pages: $num_pages, Title: $title");
+                $logger->info("Media ID: $media_id, Pages: $num_pages");
                 
                 # 偵測圖片格式
                 my $ext = "jpg";
-                if ($html =~ m#/galleries/$media_id/1\.(png|webp|jpg)#i) { $ext = $1; }
+                if ($html =~ m#/galleries/$media_id/1\.(png|webp|jpg)#i) { 
+                    $ext = $1; 
+                }
 
                 if ($lrr_info->{tempdir}) {
                     my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
                     unless (-d $work_dir) { mkdir $work_dir; }
                     
-                    $logger->info("Downloading $num_pages images to $work_dir...");
+                    $logger->info("Downloading images to $work_dir...");
                     
                     my $downloaded = 0;
                     for (my $i = 1; $i <= $num_pages; $i++) {
                         my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
                         my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
                         
-                        # 圖片請求必須帶上正確的 Referer
                         eval {
                             my $img_tx = $ua->get($img_url => { Referer => $url });
                             if ($img_tx->result->is_success) {
                                 $img_tx->result->save_to($save_to);
                                 $downloaded++;
-                            } else {
-                                $logger->error("Failed to download image $i: " . $img_tx->result->code);
                             }
                         };
                     }
@@ -118,17 +123,13 @@ sub provide_url {
                             return ( file_path => abs_path($zip_path) );
                         }
                     } else {
-                        return ( error => "No images could be downloaded. Check IP/Rate-limit." );
+                        return ( error => "No images downloaded." );
                     }
                 }
             }
         }
     } else {
-        $logger->error("nHentai Access Error: " . $res->code . " Content: " . substr($res->body, 0, 200));
-        if ($res->code == 403) {
-            return ( error => "403 Forbidden: nHentai is blocking the request. Update cookies in Metadata plugin." );
-        }
-        return ( error => "HTTP " . $res->code );
+        return ( error => "nHentai access failed. code: " . $res->code );
     }
 
     return ( error => "Parsing failed." );
