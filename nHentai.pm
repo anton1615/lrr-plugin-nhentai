@@ -17,9 +17,9 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.4",
-        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging. (v2.4 Final Fix)",
-        url_regex    => 'https?:::\/\/nhentai\.net\/g\/\d+\/?'
+        version      => "2.5",
+        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging. (v2.5 Delimiter Fix)",
+        url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
 
@@ -29,7 +29,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.4 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.5 Triggered: $url ---");
 
     # 使用 LRR 提供的 UserAgent (含 Cookies)
     my $ua = $lrr_info->{user_agent};
@@ -43,28 +43,30 @@ sub provide_url {
         
         # 1. 提取標題
         my $title = "nhentai_download";
-        if ($html =~ m|<h1 class="title">.*?<span class="pretty">(.*?)</span>|is) {
+        if ($html =~ m#<h1 class="title">.*?<span class="pretty">(.*?)</span>#is) {
             $title = $1;
-            $title =~ s/[\/\\:\*\?"<>\|]/_/g; # 移除非法字元
-            $title =~ s/^\s+|\s+$//g;
+            $title =~ s/[/\\:*?"<>|]/_/g; # 移除非法字元
+            $title =~ s/^ +| +$//g;
         }
 
         # 2. 提取 Media ID
-        if ($html =~ m|/galleries/(\d+)/|i) {
+        if ($html =~ m#/galleries/(\\d+)/#i) {
             my $media_id = $1;
             
             # 3. 提取總頁數
             my $num_pages = 0;
-            if ($html =~ m|<span class="name">(\d+)</span>|i || $html =~ m|<div>(\d+) pages</div>|i) {
+            if ($html =~ m#<span class="name">(\\d+)</span>#i || $html =~ m#<div>(\\d+) pages</div>#i) {
                 $num_pages = $1;
             }
 
             if ($media_id && $num_pages > 0) {
                 $logger->info("Found Media ID: $media_id, Pages: $num_pages, Title: $title");
                 
-                # 偵測圖片格式
+                # 偵測圖片格式 (修正定界符衝突)
                 my $ext = "jpg";
-                if ($html =~ m|/galleries/$media_id/1\.(png|webp|jpg)|i) { $ext = $1; }
+                if ($html =~ m#/galleries/$media_id/1\.(png|webp|jpg)#i) { 
+                    $ext = $1; 
+                }
 
                 if ($lrr_info->{tempdir}) {
                     # 建立暫存下載目錄
@@ -108,6 +110,7 @@ sub provide_url {
                         
                         if (-s $zip_path) {
                             $logger->info("Download and packaging successful: $zip_path");
+                            # 返回 List 格式
                             return ( file_path => abs_path($zip_path) );
                         }
                     } else {
