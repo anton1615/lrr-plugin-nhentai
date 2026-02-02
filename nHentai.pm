@@ -17,8 +17,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "3.2",
-        description  => "Max-Quality nHentai downloader with Deflate compression support.",
+        version      => "3.3",
+        description  => "Max-Quality nHentai downloader with robust fallback and Deflate compression.",
         url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
@@ -29,7 +29,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v3.2 Triggered (Compression Fix) ---");
+    $logger->info("--- nHentai Mojo v3.3 Triggered: $url ---");
 
     my $ua = $lrr_info->{user_agent};
     $ua->max_redirects(5);
@@ -41,31 +41,42 @@ sub provide_url {
     if ($res->is_success) {
         my $html = $res->body;
         
-        # 1. 提取標題
+        # 1. 標題提取
         my $raw_title = "";
         if ($html =~ m#<h2 class="title">(.*?)</h2>#is) { $raw_title = $1; }
-elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
+        elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
         
         my $title = "nhentai_download";
         if ($raw_title) {
             $title = $raw_title;
             $title =~ s#<[^>]*>##g; 
             $title =~ s#[/\\:*?"<>|]#_#g; 
-            $title =~ s#\s+# #g; 
-            $title =~ s#^\s+|\s+$##g; 
+            $title =~ s#\s+# #g;
+            $title =~ s#^\s+|\s+$##g;
             if (length($title) > 150) { $title = substr($title, 0, 150); }
         }
 
-        # 2. 獲取 Media ID 與格式
+        # 2. 獲取 Media ID
         my $media_id = "";
         if ($html =~ m#/galleries/(\d+)/#i) { $media_id = $1; }
 
+        # 3. 獲取頁面格式
         my @page_exts;
-        if ($html =~ m#images["']\s*:\s*\{["']pages["']\s*:\s*\[(.*?)\]#is) {
+        if ($html =~ m#images["']\s*:\s*\{[ "']pages["']\s*:\s*\[(.*?)\]#is) {
             my $pages_json = $1;
             while ($pages_json =~ m#["']t["']\s*:\s*["']([pjw])["']#g) {
                 push @page_exts, ($1 eq 'p' ? "png" : ($1 eq 'w' ? "webp" : "jpg"));
             }
+        }
+
+        # 備援：HTML 掃描
+        if (scalar @page_exts == 0 && $media_id) {
+            $logger->info("JSON fail, falling back to HTML scanning...");
+            my $default_ext = "jpg";
+            if ($html =~ m#/galleries/$media_id/1t\.(png|webp|jpg)#i) { $default_ext = $1; }
+            my $num_pages = 0;
+            if ($html =~ m#<span class="name">(\d+)</span>#i || $html =~ m#(\d+)\s+pages#i) { $num_pages = $1; }
+            for (my $i = 0; $i < $num_pages; $i++) { push @page_exts, $default_ext; }
         }
 
         if ($media_id && scalar @page_exts > 0) {
@@ -81,7 +92,6 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
                     my $ext = $page_exts[$i-1];
                     my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
                     my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
-                    
                     eval {
                         my $img_tx = $ua->get($img_url => $img_headers);
                         if ($img_tx->result->is_success) {
@@ -94,25 +104,22 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
                 if ($downloaded > 0) {
                     my $zip_path = $lrr_info->{tempdir} . "/$title.zip";
                     my $zip = Archive::Zip->new();
-                    
                     for (my $i = 1; $i <= $num_pages; $i++) {
                         my $ext = $page_exts[$i-1];
-                        my $img_file = sprintf("%03d.%s", $i, $ext);
-                        my $path = "$work_dir/$img_file";
-                        if (-e $path) {
-                            my $member = $zip->addFile($path, $img_file);
-                            # 關鍵修正：啟用 Deflate 壓縮
+                        my $img_name = sprintf("%03d.%s", $i, $ext);
+                        my $full_p = "$work_dir/$img_name";
+                        if (-e $full_p) {
+                            my $member = $zip->addFile($full_p, $img_name);
                             $member->desiredCompressionMethod(COMPRESSION_DEFLATED);
                         }
                     }
-                    
                     $zip->writeToFileNamed($zip_path);
                     return ( file_path => abs_path($zip_path) );
                 }
             }
         }
     }
-    return ( error => "Download failed." );
+    return ( error => "nHentai v3.3 download failed." );
 }
 
 1;
