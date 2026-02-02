@@ -5,6 +5,7 @@ use warnings;
 no warnings 'uninitialized';
 
 use LANraragi::Utils::Logging qw(get_plugin_logger);
+use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
 
 sub plugin_info {
     return (
@@ -12,8 +13,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.0",
-        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging to avoid encoding/header errors.",
+        version      => "2.1",
+        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging using Archive::Zip.",
         url_regex    => 'https?:\/\/nhentai\.net\/g\/\d+\/?'
     );
 }
@@ -24,7 +25,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.0 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.1 Triggered: $url ---");
 
     # 使用 LRR 預先配置好的 UserAgent
     my $ua = $lrr_info->{user_agent};
@@ -38,8 +39,8 @@ sub provide_url {
         
         # 1. 提取標題
         my $title = "nhentai_download";
-        if ($html =~ m|<h1 class="title"><span class="before">(.*?)</span><span class="pretty">(.*?)</span>|is) {
-            $title = $2; # 使用漂亮的標題
+        if ($html =~ m|<h1 class="title">.*?<span class="pretty">(.*?)</span>|is) {
+            $title = $1;
             $title =~ s/[\/\\:\*\?"<>\|]/_/g; # 移除非法字元
             $title =~ s/^\s+|\s+$//g;
         }
@@ -73,14 +74,25 @@ sub provide_url {
                         $ua->get($img_url)->result->save_to($save_to);
                     }
 
-                    # 使用 LRR 內建的 Archive::Zip 打包 (或是直接回傳目錄由 LRR 處理，但回傳 ZIP 最穩)
+                    # 使用 Archive::Zip 打包
                     my $zip_path = $lrr_info->{tempdir} . "/$title.zip";
-                    $logger->info("Packaging images into $zip_path...");
+                    my $zip = Archive::Zip->new();
                     
-                    # 執行系統 zip 指令最簡單穩定
-                    system("cd \"$work_dir\" && zip -jr \"$zip_path\" .");
+                    $logger->info("Packaging images into $zip_path using Archive::Zip...");
+                    
+                    for (my $i = 1; $i <= $num_pages; $i++) {
+                        my $img_file = sprintf("%03d.%s", $i, $ext);
+                        my $img_full_path = "$work_dir/$img_file";
+                        $zip->addFile($img_full_path, $img_file);
+                    }
+                    
+                    unless ($zip->writeToFileNamed($zip_path) == AZ_OK) {
+                        $logger->error("Archive::Zip failed to write to $zip_path");
+                        return ( error => "Packaging failed." );
+                    }
                     
                     if (-s $zip_path) {
+                        $logger->info("Download and packaging successful: $zip_path");
                         return ( file_path => $zip_path );
                     }
                 }
