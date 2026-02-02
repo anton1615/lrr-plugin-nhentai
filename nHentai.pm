@@ -17,8 +17,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.9",
-        description  => "Downloads original quality galleries from nHentai using metadata-based extension detection.",
+        version      => "3.0",
+        description  => "High-quality nHentai downloader with robust metadata parsing and ZIP packaging.",
         url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
@@ -29,7 +29,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.9 Triggered (Original Quality Fix) ---");
+    $logger->info("--- nHentai Mojo v3.0 Triggered: $url ---");
 
     # 模擬真實瀏覽器
     my $ua = $lrr_info->{user_agent};
@@ -42,7 +42,7 @@ sub provide_url {
     if ($res->is_success) {
         my $html = $res->body;
         
-        # 1. 提取標題
+        # 1. 提取完整日文標題
         my $raw_title = "";
         if ($html =~ m#<h2 class="title">(.*?)</h2>#is) { $raw_title = $1; }
 elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
@@ -52,74 +52,77 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
             $title = $raw_title;
             $title =~ s#<[^>]*>##g; 
             $title =~ s#[/\\:*?"<>|]#_#g; 
+            $title =~ s#\s+# #g;
             $title =~ s#^\s+|\s+$##g;
             if (length($title) > 150) { $title = substr($title, 0, 150); }
         }
 
-        # 2. 解析 Media ID 與每頁格式 (關鍵：抓取 JSON 數據)
-        if ($html =~ m#window\._gallery\s*=\s*JSON\.parse\((.*?)\);#is) {
-            my $json_str = $1;
-            # 處理轉義的引號
-            $json_str =~ s#^'|'$##g;
-            $json_str =~ s#\\"#"#g;
-            
-            my $media_id = "";
-            if ($json_str =~ m#"media_id":"(\d+)"#) { $media_id = $1; }
-            
-            # 獲取每一頁的副檔名對照表
-            my @page_exts;
-            while ($json_str =~ m#{"t":"([pjw])"#g) {
-                my $code = $1;
-                my $ext = ($code eq 'p') ? "png" : ($code eq 'w' ? "webp" : "jpg");
-                push @page_exts, $ext;
+        # 2. 獲取 Media ID
+        my $media_id = "";
+        if ($html =~ m#/galleries/(\d+)/#i) { $media_id = $1; }
+
+        # 3. 獲取圖片格式與總頁數 (混合模式)
+        my @page_exts;
+        
+        # 嘗試從 JSON 抓取 (最精準)
+        if ($html =~ m#images["']\s*:\s*\{["']pages["']\s*:\s*\[(.*?)\]#is) {
+            my $pages_json = $1;
+            while ($pages_json =~ m#["']t["']\s*:\s*["']([pjw])["']#g) {
+                push @page_exts, ($1 eq 'p' ? "png" : ($1 eq 'w' ? "webp" : "jpg"));
             }
+        }
 
-            if ($media_id && scalar @page_exts > 0) {
-                my $num_pages = scalar @page_exts;
-                $logger->info("Media ID: $media_id, Pages: $num_pages, Detected format list.");
+        # 備援：從 HTML 掃描縮圖格式
+        if (scalar @page_exts == 0) {
+            $logger->info("Falling back to HTML thumbnail scanning...");
+            my $default_ext = "jpg";
+            if ($html =~ m#/galleries/$media_id/1t\.(png|webp|jpg)#i) { $default_ext = $1; }
+            
+            my $num_pages = 0;
+            if ($html =~ m#<span class="name">(\d+)</span>#i || $html =~ m#(\d+)\s+pages#i) { $num_pages = $1; }
+            
+            for (my $i = 0; $i < $num_pages; $i++) { push @page_exts, $default_ext; }
+        }
 
-                if ($lrr_info->{tempdir}) {
-                    my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
-                    mkdir $work_dir;
+        if ($media_id && scalar @page_exts > 0) {
+            my $num_pages = scalar @page_exts;
+            $logger->info("Media ID: $media_id, Pages: $num_pages, Format: $page_exts[0]");
+
+            if ($lrr_info->{tempdir}) {
+                my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
+                mkdir $work_dir;
+                
+                my $downloaded = 0;
+                for (my $i = 1; $i <= $num_pages; $i++) {
+                    my $ext = $page_exts[$i-1];
+                    my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
+                    my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
                     
-                    my $downloaded = 0;
+                    eval {
+                        my $img_tx = $ua->get($img_url => { Referer => $url });
+                        if ($img_tx->result->is_success) {
+                            $img_tx->result->save_to($save_to);
+                            $downloaded++;
+                        }
+                    };
+                }
+
+                if ($downloaded > 0) {
+                    my $zip_path = $lrr_info->{tempdir} . "/$title.zip";
+                    my $zip = Archive::Zip->new();
                     for (my $i = 1; $i <= $num_pages; $i++) {
                         my $ext = $page_exts[$i-1];
-                        my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
-                        my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
-                        
-                        eval {
-                            my $img_tx = $ua->get($img_url => { Referer => $url });
-                            if ($img_tx->result->is_success) {
-                                $img_tx->result->save_to($save_to);
-                                $downloaded++;
-                            } else {
-                                $logger->error("Page $i download failed ($ext): " . $img_tx->result->code);
-                            }
-                        };
+                        my $img_file = sprintf("%03d.%s", $i, $ext);
+                        my $path = "$work_dir/$img_file";
+                        if (-e $path) { $zip->addFile($path, $img_file); }
                     }
-
-                    if ($downloaded > 0) {
-                        my $zip_path = $lrr_info->{tempdir} . "/$title.zip";
-                        my $zip = Archive::Zip->new();
-                        for (my $i = 1; $i <= $num_pages; $i++) {
-                            my $ext = $page_exts[$i-1];
-                            my $img_file = sprintf("%03d.%s", $i, $ext);
-                            my $path = "$work_dir/$img_file";
-                            if (-e $path) { $zip->addFile($path, $img_file); }
-                        }
-                        $zip->writeToFileNamed($zip_path);
-                        return ( file_path => abs_path($zip_path) );
-                    }
+                    $zip->writeToFileNamed($zip_path);
+                    return ( file_path => abs_path($zip_path) );
                 }
             }
-        } else {
-            # 回退到舊的簡易解析模式 (如果 JSON 抓不到)
-            $logger->warn("JSON metadata not found, falling back to basic parsing.");
-            # ... (保留原本的 media_id 抓取邏輯) ...
         }
     }
-    return ( error => "Failed to fetch original images." );
+    return ( error => "nHentai parsing failed. (v3.0)" );
 }
 
 1;
