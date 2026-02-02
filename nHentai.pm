@@ -13,9 +13,9 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.1",
+        version      => "2.2",
         description  => "Downloads galleries from nHentai with in-plugin ZIP packaging using Archive::Zip.",
-        url_regex    => 'https?:\/\/nhentai\.net\/g\/\d+\/?'
+        url_regex    => 'https?///nhentai.net/g/d+/?'
     );
 }
 
@@ -25,7 +25,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.1 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.2 Triggered: $url ---");
 
     # 使用 LRR 預先配置好的 UserAgent
     my $ua = $lrr_info->{user_agent};
@@ -41,17 +41,17 @@ sub provide_url {
         my $title = "nhentai_download";
         if ($html =~ m|<h1 class="title">.*?<span class="pretty">(.*?)</span>|is) {
             $title = $1;
-            $title =~ s/[\/\\:\*\?"<>\|]/_/g; # 移除非法字元
-            $title =~ s/^\s+|\s+$//g;
+            $title =~ s/[/\\:*?"<>|]/_/g; # 移除非法字元
+            $title =~ s/^	+|	+$//g;
         }
 
         # 2. 提取 Media ID
-        if ($html =~ m|/galleries/(\d+)/|i) {
+        if ($html =~ m|/galleries/(\\d+)/|i) {
             my $media_id = $1;
             
             # 3. 提取總頁數
             my $num_pages = 0;
-            if ($html =~ m|<span class="name">(\d+)</span>|i || $html =~ m|<div>(\d+) pages</div>|i) {
+            if ($html =~ m|<span class="name">(\\d+)</span>|i || $html =~ m|<div>(\\d+) pages</div>|i) {
                 $num_pages = $1;
             }
 
@@ -60,7 +60,7 @@ sub provide_url {
                 
                 # 偵測圖片格式
                 my $ext = "jpg";
-                if ($html =~ m|/galleries/$media_id/1\.(png|webp|jpg)|i) { $ext = $1; }
+                if ($html =~ m|/galleries/$media_id/1.(png|webp|jpg)|i) { $ext = $1; }
 
                 if ($lrr_info->{tempdir}) {
                     my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
@@ -71,7 +71,12 @@ sub provide_url {
                     for (my $i = 1; $i <= $num_pages; $i++) {
                         my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
                         my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
-                        $ua->get($img_url)->result->save_to($save_to);
+                        eval {
+                            $ua->get($img_url)->result->save_to($save_to);
+                        };
+                        if ($@) {
+                            $logger->error("Image $i download failed: $@");
+                        }
                     }
 
                     # 使用 Archive::Zip 打包
@@ -83,7 +88,9 @@ sub provide_url {
                     for (my $i = 1; $i <= $num_pages; $i++) {
                         my $img_file = sprintf("%03d.%s", $i, $ext);
                         my $img_full_path = "$work_dir/$img_file";
-                        $zip->addFile($img_full_path, $img_file);
+                        if (-e $img_full_path) {
+                            $zip->addFile($img_full_path, $img_file);
+                        }
                     }
                     
                     unless ($zip->writeToFileNamed($zip_path) == AZ_OK) {
