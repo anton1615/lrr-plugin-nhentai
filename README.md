@@ -14,14 +14,41 @@ A custom downloader plugin for [LANraragi](https://github.com/Difegue/LANraragi)
 
 ## Installation
 
-### 1. NixOS (Declarative Installation)
-Add the following to your NixOS configuration:
+### 1. NixOS (Declarative via Flakes - Recommended)
+The most elegant way to install this plugin is via Nix Flakes. This automates hash management.
+
+**Step 1: Add to your `flake.nix` inputs**
+```nix
+inputs.lrr-plugin-nhentai = {
+  url = "https://raw.githubusercontent.com/anton1615/lrr-plugin-nhentai/master/nHentai.pm";
+  flake = false;
+};
+```
+
+**Step 2: Use in your LANraragi configuration**
+```nix
+{ inputs, ... }:
+{
+  virtualisation.oci-containers.containers.lanraragi.volumes = [
+    "${inputs.lrr-plugin-nhentai}:/home/koyomi/lanraragi/lib/LANraragi/Plugin/Download/nHentai.pm:ro"
+  ];
+}
+```
+
+**Step 3: Update and Deploy**
+```bash
+nix flake update lrr-plugin-nhentai
+sudo nixos-rebuild switch --flake .
+```
+
+### 2. Traditional NixOS (fetchurl)
+If you are not using Flakes, add the following to your configuration:
 
 ```nix
 let
   nhentaiPlugin = pkgs.fetchurl {
     url = "https://raw.githubusercontent.com/anton1615/lrr-plugin-nhentai/master/nHentai.pm";
-    sha256 = "1b8255clh93580a37adq1sa4lj1hdm848ffp58gssh3rkxdc5928"; # Replace with actual hash
+    sha256 = "sha256-QY15grutWsbKAY5s93F//gShkpEKmquEL7ZXKDTS+Hk=";
   };
 in {
   virtualisation.oci-containers.containers.lanraragi.volumes = [
@@ -30,7 +57,7 @@ in {
 }
 ```
 
-### 2. Manual Installation
+### 3. Manual Installation
 1. Download `nHentai.pm` from this repository.
 2. Place it in the `/lib/LANraragi/Plugin/Download/` directory of your LANraragi installation.
 3. Restart LANraragi.
