@@ -17,8 +17,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "3.0",
-        description  => "High-quality nHentai downloader with robust metadata parsing and ZIP packaging.",
+        version      => "3.1",
+        description  => "Max-Quality nHentai downloader with advanced browser header emulation.",
         url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
@@ -29,20 +29,24 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v3.0 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v3.1 Triggered (Max Quality Mode) ---");
 
-    # 模擬真實瀏覽器
+    # 模擬高畫質桌上型瀏覽器
     my $ua = $lrr_info->{user_agent};
     $ua->max_redirects(5);
-    $ua->transactor->name('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+    
+    # 設置全域 User-Agent
+    my $chrome_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+    $ua->transactor->name($chrome_ua);
 
+    # 1. 抓取主頁面
     my $tx = $ua->get($url);
     my $res = $tx->result;
 
     if ($res->is_success) {
         my $html = $res->body;
         
-        # 1. 提取完整日文標題
+        # 提取標題
         my $raw_title = "";
         if ($html =~ m#<h2 class="title">(.*?)</h2>#is) { $raw_title = $1; }
 elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
@@ -57,14 +61,11 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
             if (length($title) > 150) { $title = substr($title, 0, 150); }
         }
 
-        # 2. 獲取 Media ID
+        # 2. 獲取 Media ID 與格式
         my $media_id = "";
         if ($html =~ m#/galleries/(\d+)/#i) { $media_id = $1; }
 
-        # 3. 獲取圖片格式與總頁數 (混合模式)
         my @page_exts;
-        
-        # 嘗試從 JSON 抓取 (最精準)
         if ($html =~ m#images["']\s*:\s*\{["']pages["']\s*:\s*\[(.*?)\]#is) {
             my $pages_json = $1;
             while ($pages_json =~ m#["']t["']\s*:\s*["']([pjw])["']#g) {
@@ -72,37 +73,48 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
             }
         }
 
-        # 備援：從 HTML 掃描縮圖格式
+        # 備援
         if (scalar @page_exts == 0) {
-            $logger->info("Falling back to HTML thumbnail scanning...");
             my $default_ext = "jpg";
             if ($html =~ m#/galleries/$media_id/1t\.(png|webp|jpg)#i) { $default_ext = $1; }
-            
             my $num_pages = 0;
-            if ($html =~ m#<span class="name">(\d+)</span>#i || $html =~ m#(\d+)\s+pages#i) { $num_pages = $1; }
-            
+            if ($html =~ m#<span class="name">(\d+)</span>#i) { $num_pages = $1; }
             for (my $i = 0; $i < $num_pages; $i++) { push @page_exts, $default_ext; }
         }
 
         if ($media_id && scalar @page_exts > 0) {
             my $num_pages = scalar @page_exts;
-            $logger->info("Media ID: $media_id, Pages: $num_pages, Format: $page_exts[0]");
+            $logger->info("Starting Max Quality Download for Media ID: $media_id");
 
             if ($lrr_info->{tempdir}) {
                 my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
                 mkdir $work_dir;
                 
                 my $downloaded = 0;
+                # 準備高品質請求頭
+                my $img_headers = {
+                    'Referer'         => $url,
+                    'Accept'          => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Accept-Language' => 'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Cache-Control'   => 'no-cache',
+                    'Pragma'          => 'no-cache',
+                };
+
                 for (my $i = 1; $i <= $num_pages; $i++) {
                     my $ext = $page_exts[$i-1];
                     my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
                     my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
                     
                     eval {
-                        my $img_tx = $ua->get($img_url => { Referer => $url });
+                        my $img_tx = $ua->get($img_url => $img_headers);
                         if ($img_tx->result->is_success) {
                             $img_tx->result->save_to($save_to);
                             $downloaded++;
+                            
+                            if ($i == 1) {
+                                my $size = -s $save_to;
+                                $logger->info("Page 1 size: $size bytes (format: $ext)");
+                            }
                         }
                     };
                 }
@@ -117,12 +129,13 @@ elsif ($html =~ m#<h1 class="title">(.*?)</h1>#is) { $raw_title = $1; }
                         if (-e $path) { $zip->addFile($path, $img_file); }
                     }
                     $zip->writeToFileNamed($zip_path);
+                    $logger->info("Archive complete. Total size: " . (-s $zip_path) . " bytes");
                     return ( file_path => abs_path($zip_path) );
                 }
             }
         }
     }
-    return ( error => "nHentai parsing failed. (v3.0)" );
+    return ( error => "Max quality fetch failed." );
 }
 
 1;
