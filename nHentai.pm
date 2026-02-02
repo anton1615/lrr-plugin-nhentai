@@ -1,81 +1,127 @@
-# 替換從 "建立安全的檔名" 到最後的所有代碼
+package LANraragi::Plugin::Download::nHentai;
 
-    # 建立安全的檔名
-    my $safe_filename = "nhentai_$media_id";
-    
-    # 使用 LANraragi 的臨時檔案機制
-    use File::Temp qw(tempfile);
-    use File::Copy qw(move);
-    
-    my ($fh, $temp_zip) = tempfile(
-        "nh_${media_id}_XXXXX",
-        SUFFIX => '.zip',
-        DIR    => $lrr_info->{tempdir},
-        UNLINK => 0  # 不要自動刪除
+use strict;
+use warnings;
+no warnings 'uninitialized';
+
+# 確保在容器環境內能找到 LRR 的核心模組
+use lib '/home/koyomi/lanraragi/lib';
+use LANraragi::Utils::Logging qw(get_plugin_logger);
+use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
+use File::Temp qw(tempfile);
+use Cwd 'abs_path';
+
+sub plugin_info {
+    return (
+        name         => "nHentai Downloader",
+        type         => "download",
+        namespace    => "nhdl",
+        author       => "Gemini CLI",
+        version      => "2.4",
+        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging. (v2.4 Final Fix)",
+        url_regex    => 'https?:::\/\/nhentai\.net\/g\/\d+\/?'
     );
-    close $fh;  # 關閉檔案控制碼，讓 Archive::Zip 可以寫入
-    
-    my $zip = Archive::Zip->new();
-    
-    $logger->info("Packaging images into $temp_zip using Archive::Zip...");
-    
-    my $added_count = 0;
-    for (my $i = 1; $i <= $num_pages; $i++) {
-        my $img_file = sprintf("%03d.%s", $i, $ext);
-        my $img_full_path = "$work_dir/$img_file";
-        if (-e $img_full_path && -s $img_full_path) {
-            my $member = $zip->addFile($img_full_path, $img_file);
-            if ($member) {
-                $member->desiredCompressionMethod(COMPRESSION_STORED);
-                $added_count++;
+}
+
+sub provide_url {
+    shift;
+    my ($lrr_info, %params) = @_;
+    my $logger = get_plugin_logger();
+    my $url = $lrr_info->{url};
+
+    $logger->info("--- nHentai Mojo v2.4 Triggered: $url ---");
+
+    # 使用 LRR 提供的 UserAgent (含 Cookies)
+    my $ua = $lrr_info->{user_agent};
+    $ua->max_redirects(5);
+
+    my $tx = $ua->get($url);
+    my $res = $tx->result;
+
+    if ($res->is_success) {
+        my $html = $res->body;
+        
+        # 1. 提取標題
+        my $title = "nhentai_download";
+        if ($html =~ m|<h1 class="title">.*?<span class="pretty">(.*?)</span>|is) {
+            $title = $1;
+            $title =~ s/[\/\\:\*\?"<>\|]/_/g; # 移除非法字元
+            $title =~ s/^\s+|\s+$//g;
+        }
+
+        # 2. 提取 Media ID
+        if ($html =~ m|/galleries/(\d+)/|i) {
+            my $media_id = $1;
+            
+            # 3. 提取總頁數
+            my $num_pages = 0;
+            if ($html =~ m|<span class="name">(\d+)</span>|i || $html =~ m|<div>(\d+) pages</div>|i) {
+                $num_pages = $1;
+            }
+
+            if ($media_id && $num_pages > 0) {
+                $logger->info("Found Media ID: $media_id, Pages: $num_pages, Title: $title");
+                
+                # 偵測圖片格式
+                my $ext = "jpg";
+                if ($html =~ m|/galleries/$media_id/1\.(png|webp|jpg)|i) { $ext = $1; }
+
+                if ($lrr_info->{tempdir}) {
+                    # 建立暫存下載目錄
+                    my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
+                    unless (-d $work_dir) { mkdir $work_dir; }
+                    
+                    $logger->info("Downloading $num_pages images to $work_dir...");
+                    
+                    for (my $i = 1; $i <= $num_pages; $i++) {
+                        my $img_url = "https://i.nhentai.net/galleries/$media_id/$i.$ext";
+                        my $save_to = sprintf("%s/%03d.%s", $work_dir, $i, $ext);
+                        eval {
+                            $ua->get($img_url)->result->save_to($save_to);
+                        };
+                        if ($@) {
+                            $logger->error("Image $i download failed: $@");
+                        }
+                    }
+
+                    # 建立 ZIP
+                    my $zip_path = $lrr_info->{tempdir} . "/nhentai_$media_id.zip";
+                    my $zip = Archive::Zip->new();
+                    
+                    $logger->info("Packaging images into $zip_path...");
+                    
+                    my $added = 0;
+                    for (my $i = 1; $i <= $num_pages; $i++) {
+                        my $img_file = sprintf("%03d.%s", $i, $ext);
+                        my $img_full_path = "$work_dir/$img_file";
+                        if (-e $img_full_path && -s $img_full_path) {
+                            $zip->addFile($img_full_path, $img_file);
+                            $added++;
+                        }
+                    }
+                    
+                    if ($added > 0) {
+                        unless ($zip->writeToFileNamed($zip_path) == AZ_OK) {
+                            $logger->error("Archive::Zip failed to write to $zip_path");
+                            return ( error => "Packaging failed." );
+                        }
+                        
+                        if (-s $zip_path) {
+                            $logger->info("Download and packaging successful: $zip_path");
+                            return ( file_path => abs_path($zip_path) );
+                        }
+                    } else {
+                        return ( error => "No images were downloaded." );
+                    }
+                }
             }
         }
+    } else {
+        $logger->error("Access failed: " . $res->code);
+        return ( error => "nHentai access failed. code: " . $res->code );
     }
 
-    $logger->info("Added $added_count files to archive");
-
-    if ($added_count == 0) {
-        unlink $temp_zip;
-        return ( error => "No valid files to add to archive." );
-    }
-    
-    my $write_status = $zip->writeToFileNamed($temp_zip);
-    unless ($write_status == AZ_OK) {
-        $logger->error("Archive::Zip failed to write (status: $write_status)");
-        unlink $temp_zip;
-        return ( error => "ZIP packaging failed." );
-    }
-    
-    # 驗證 ZIP 檔案
-    unless (-e $temp_zip && -s $temp_zip > 0) {
-        $logger->error("ZIP file is invalid: $temp_zip");
-        unlink $temp_zip;
-        return ( error => "ZIP file creation failed." );
-    }
-
-    my $zip_size = -s $temp_zip;
-    $logger->info("ZIP created successfully: $temp_zip (size: $zip_size bytes)");
-    
-    # 清理工作目錄
-    opendir(my $dh, $work_dir) or warn "Cannot open $work_dir: $!";
-    while (my $file = readdir($dh)) {
-        next if $file =~ /^\./;
-        unlink "$work_dir/$file";
-    }
-    closedir($dh);
-    rmdir $work_dir;
-    
-    # 返回給 LANraragi - 使用絕對路徑
-    use Cwd 'abs_path';
-    my $abs_path = abs_path($temp_zip);
-    
-    $logger->info("Returning file: $abs_path");
-    
-    return ( 
-        file_path => $abs_path,
-        filename  => "$safe_filename.zip",
-        title     => $title || "nHentai $media_id"
-    );
+    return ( error => "Could not parse nHentai content." );
 }
 
 1;
