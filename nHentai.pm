@@ -4,6 +4,8 @@ use strict;
 use warnings;
 no warnings 'uninitialized';
 
+# 確保在容器環境內能找到 LRR 的核心模組
+use lib '/home/koyomi/lanraragi/lib';
 use LANraragi::Utils::Logging qw(get_plugin_logger);
 use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
 
@@ -13,8 +15,8 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.2",
-        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging using Archive::Zip.",
+        version      => "2.3",
+        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging using Archive::Zip. (v2.3 Path Fix)",
         url_regex    => 'https?///nhentai.net/g/d+/?'
     );
 }
@@ -25,7 +27,7 @@ sub provide_url {
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.2 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.3 Triggered: $url ---");
 
     # 使用 LRR 預先配置好的 UserAgent
     my $ua = $lrr_info->{user_agent};
@@ -42,7 +44,7 @@ sub provide_url {
         if ($html =~ m|<h1 class="title">.*?<span class="pretty">(.*?)</span>|is) {
             $title = $1;
             $title =~ s/[/\\:*?"<>|]/_/g; # 移除非法字元
-            $title =~ s/^	+|	+$//g;
+            $title =~ s/^\s+|\s+$//g;
         }
 
         # 2. 提取 Media ID
@@ -60,7 +62,7 @@ sub provide_url {
                 
                 # 偵測圖片格式
                 my $ext = "jpg";
-                if ($html =~ m|/galleries/$media_id/1.(png|webp|jpg)|i) { $ext = $1; }
+                if ($html =~ m|/galleries/$media_id/1\.(png|webp|jpg)|i) { $ext = $1; }
 
                 if ($lrr_info->{tempdir}) {
                     my $work_dir = $lrr_info->{tempdir} . "/nh_$media_id";
