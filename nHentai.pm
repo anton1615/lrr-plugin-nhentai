@@ -17,19 +17,19 @@ sub plugin_info {
         type         => "download",
         namespace    => "nhdl",
         author       => "Gemini CLI",
-        version      => "2.5",
-        description  => "Downloads galleries from nHentai with in-plugin ZIP packaging. (v2.5 Delimiter Fix)",
+        version      => "2.6",
+        description  => "Downloads galleries from nHentai with Japanese Title support and ZIP packaging.",
         url_regex    => 'https?://nhentai\.net/g/\d+/?'
     );
 }
 
 sub provide_url {
     shift;
-    my ($lrr_info, %params) = @_;
+    my ($lrr_info, %params) = @_; 
     my $logger = get_plugin_logger();
     my $url = $lrr_info->{url};
 
-    $logger->info("--- nHentai Mojo v2.5 Triggered: $url ---");
+    $logger->info("--- nHentai Mojo v2.6 Triggered: $url ---");
 
     # 使用 LRR 提供的 UserAgent (含 Cookies)
     my $ua = $lrr_info->{user_agent};
@@ -41,28 +41,39 @@ sub provide_url {
     if ($res->is_success) {
         my $html = $res->body;
         
-        # 1. 提取標題
-        my $title = "nhentai_download";
-        if ($html =~ m#<h1 class="title">.*?<span class="pretty">(.*?)</span>#is) {
+        # 1. 優先提取日文標題 (通常在 h2.title)
+        my $title = "";
+        if ($html =~ m#<h2 class="title">.*?<span class="pretty">(.*?)</span>#is) {
             $title = $1;
-            $title =~ s/[/\\:*?"<>|]/_/g; # 移除非法字元
-            $title =~ s/^ +| +$//g;
+        } elsif ($html =~ m#<h1 class="title">.*?<span class="pretty">(.*?)</span>#is) {
+            # 如果沒日文標題，回退到英文標題
+            $title = $1;
+        }
+        
+        # 清理標題 (安全性強化)
+        if ($title) {
+            $title =~ s#<[^>]*>##g; # 移除 HTML
+            $title =~ s#[/\\:*?"<>|]#_#g; # 移除非法字元
+            $title =~ s#^\s+|\s+$##g; # 修剪空白
+            if (length($title) > 150) { $title = substr($title, 0, 150); }
+        } else {
+            $title = "nhentai_download";
         }
 
         # 2. 提取 Media ID
-        if ($html =~ m#/galleries/(\\d+)/#i) {
+        if ($html =~ m#/galleries/(\d+)/#i) {
             my $media_id = $1;
             
             # 3. 提取總頁數
             my $num_pages = 0;
-            if ($html =~ m#<span class="name">(\\d+)</span>#i || $html =~ m#<div>(\\d+) pages</div>#i) {
+            if ($html =~ m#<span class="name">(\d+)</span>#i || $html =~ m#<div>(\d+) pages</div>#i) {
                 $num_pages = $1;
             }
 
             if ($media_id && $num_pages > 0) {
-                $logger->info("Found Media ID: $media_id, Pages: $num_pages, Title: $title");
+                $logger->info("Found Media ID: $media_id, Pages: $num_pages, JP Title: $title");
                 
-                # 偵測圖片格式 (修正定界符衝突)
+                # 偵測圖片格式
                 my $ext = "jpg";
                 if ($html =~ m#/galleries/$media_id/1\.(png|webp|jpg)#i) { 
                     $ext = $1; 
@@ -86,8 +97,8 @@ sub provide_url {
                         }
                     }
 
-                    # 建立 ZIP
-                    my $zip_path = $lrr_info->{tempdir} . "/nhentai_$media_id.zip";
+                    # 建立 ZIP (檔名使用日文標題)
+                    my $zip_path = $lrr_info->{tempdir} . "/$title.zip";
                     my $zip = Archive::Zip->new();
                     
                     $logger->info("Packaging images into $zip_path...");
@@ -109,8 +120,7 @@ sub provide_url {
                         }
                         
                         if (-s $zip_path) {
-                            $logger->info("Download and packaging successful: $zip_path");
-                            # 返回 List 格式
+                            $logger->info("Download successful: $zip_path");
                             return ( file_path => abs_path($zip_path) );
                         }
                     } else {
@@ -120,7 +130,7 @@ sub provide_url {
             }
         }
     } else {
-        $logger->error("Access failed: " . $res->code);
+        $logger->error("Access failed code: " . $res->code);
         return ( error => "nHentai access failed. code: " . $res->code );
     }
 
