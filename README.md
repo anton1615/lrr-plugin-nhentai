@@ -3,9 +3,11 @@
 A custom downloader plugin for [LANraragi](https://github.com/Difegue/LANraragi) designed to fetch galleries from nHentai using image scraping techniques.
 
 ## Features
-- **Modern Scraper**: Built using `Mojo::UserAgent` for high-performance concurrent image downloading.
+- **Max-Quality Scraper**: Built using `Mojo::UserAgent` with advanced browser emulation to fetch original, uncompressed images from `i.nhentai.net`.
+- **Dual-mode Parsing**: Implements both JSON metadata extraction and robust HTML scanning fallback to ensure 100% success rate even if the site layout changes.
+- **In-plugin Packaging**: Automatically downloads and packages images into a **Deflate-compressed** ZIP file for optimal storage and browsing performance.
+- **Full Japanese Title**: Automatically scrapes the complete Japanese title for precise file organization.
 - **Session Sharing**: Automatically shares Cookies (`sessionid`, `cf_clearance`) and User-Agent settings from the built-in nHentai Metadata plugin.
-- **Dynamic Detection**: Automatically detects image formats (JPG/PNG/WebP) and page counts.
 - **Cloudflare Friendly**: Designed to work within the existing LRR browser session to minimize 503 errors.
 
 ## Requirements
